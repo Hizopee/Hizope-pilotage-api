@@ -1,0 +1,53 @@
+name: Deploy en production
+
+# Se déclenche à chaque push sur main. Le job "test" doit passer avant que
+# "deploy" ne se déclenche — un test qui échoue bloque le déploiement.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer le SDK .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restaurer les dépendances
+        run: dotnet restore HizopePilotage.slnx
+
+      - name: Compiler (Release)
+        run: dotnet build HizopePilotage.slnx --configuration Release --no-restore
+
+      - name: Lancer les tests
+        run: dotnet test HizopePilotage.slnx --configuration Release --no-build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Déployer sur shared-vps
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: 62.210.78.72
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            export GIT_SSH_COMMAND='ssh -i ~/.ssh/cmicrolocks_deploy_key -o StrictHostKeyChecking=accept-new'
+            cd ~/Hizope-pilotage-api
+            git fetch origin
+            git checkout -f -B main origin/main
+            git reset --hard origin/main
+            git clean -fd
+            cd ~/hizope-scaleway-deploy/shared-vps
+            docker compose -f docker-compose.prod.yml up -d --build hizope-pilotage-api
