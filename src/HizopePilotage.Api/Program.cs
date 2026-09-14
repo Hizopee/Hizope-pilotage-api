@@ -68,6 +68,22 @@ app.MapPost("/api/reconciliation/cmicrolocks/reversals", async (
     }
 });
 
+app.MapGet("/api/logs/cmicrolocks", async (
+    CmicrolocksReconciliationClient client, CancellationToken ct, int take = 200, string? level = null) =>
+{
+    try
+    {
+        return Results.Ok(await client.GetLogsAsync(take, level, ct));
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "CMicrolocks injoignable ou route non configurée",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.Run();
 
 public record RecordReversalRequest(decimal Amount, DateTime ReversedAt, string? Note);

@@ -113,4 +113,36 @@ public class ReconciliationEndpointsTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(HttpMethod.Post, handler.LastRequest!.Method);
     }
+
+    [Fact]
+    public async Task GetLogs_RelaysUpstreamBody_WithPlatformKeyHeaderAndQueryParams()
+    {
+        var (factory, handler) = CreateFactory(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """[{"timestamp":"2026-09-14T10:00:00Z","level":"Warning","category":"X","message":"test","exception":null}]""",
+                Encoding.UTF8, "application/json"),
+        });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/logs/cmicrolocks?take=50&level=Warning");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("test", body[0].GetProperty("message").GetString());
+        Assert.Equal("test-key", handler.LastRequest!.Headers.GetValues("X-Platform-Key").Single());
+        Assert.Contains("take=50", handler.LastRequest!.RequestUri!.Query);
+        Assert.Contains("level=Warning", handler.LastRequest!.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task GetLogs_WhenUpstreamUnreachable_Returns502()
+    {
+        var (factory, _) = CreateFactory(_ => throw new HttpRequestException("connexion refusée"));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/logs/cmicrolocks");
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+    }
 }

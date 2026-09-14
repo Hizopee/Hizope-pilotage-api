@@ -39,4 +39,17 @@ public class CmicrolocksReconciliationClient(HttpClient httpClient, IConfigurati
         using var response = await httpClient.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
     }
+
+    /// <summary>Derniers logs applicatifs (tampon en mémoire côté CMicrolocks) — pour voir ce qui se passe sans accès SSH.</summary>
+    public async Task<JsonElement> GetLogsAsync(int take, string? level, CancellationToken ct = default)
+    {
+        var query = $"take={take}" + (string.IsNullOrWhiteSpace(level) ? "" : $"&level={Uri.EscapeDataString(level)}");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/platform/logs?{query}");
+        request.Headers.Add("X-Platform-Key", PlatformKey);
+
+        using var response = await httpClient.SendAsync(request, ct);
+        response.EnsureSuccessStatusCode();
+
+        return await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+    }
 }
