@@ -128,6 +128,59 @@ public class StripeSummaryEndpointTests
     }
 
     [Fact]
+    public async Task GetSummary_ComputesStripeFeeAndNetMargin_FromExpandedBalanceTransaction()
+    {
+        var (factory, handler) = CreateFactory(_ => ChargesPage("""
+        {
+            "data": [
+                {
+                    "id": "ch_1", "currency": "eur", "amount": 10000, "amount_refunded": 0,
+                    "status": "succeeded", "disputed": false,
+                    "balance_transaction": { "fee": 195, "net": 9805 }
+                }
+            ],
+            "has_more": false
+        }
+        """));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/stripe/cmicrolocks/summary");
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var eur = body.GetProperty("totals").GetProperty("eur");
+        Assert.Equal(1.95m, eur.GetProperty("stripeFeeAmount").GetDecimal());
+        // 10% de 100€ = 10€ de frais de service ; frais Stripe 1.95€ -> marge nette 8.05€.
+        Assert.Equal(8.05m, eur.GetProperty("netMargin").GetDecimal());
+        // "A verser a Cecilia" ne tient pas compte des frais Stripe (Hizope les absorbe).
+        Assert.Equal(90m, eur.GetProperty("payoutDue").GetDecimal());
+        Assert.Contains("expand[]=data.balance_transaction", handler.LastRequest!.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task GetSummary_AlertsOnNegativeMargin_WhenStripeFeeExceedsServiceFee()
+    {
+        var (factory, _) = CreateFactory(_ => ChargesPage("""
+        {
+            "data": [
+                {
+                    "id": "ch_1", "currency": "eur", "amount": 100, "amount_refunded": 0,
+                    "status": "succeeded", "disputed": false,
+                    "balance_transaction": { "fee": 55, "net": 45 }
+                }
+            ],
+            "has_more": false
+        }
+        """));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/stripe/cmicrolocks/summary");
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var alerts = body.GetProperty("alerts").EnumerateArray().Select(a => a.GetProperty("type").GetString()).ToList();
+        Assert.Contains("negative_margin", alerts);
+    }
+
+    [Fact]
     public async Task GetSummary_WhenStripeUnreachable_Returns502()
     {
         var (factory, _) = CreateFactory(_ => throw new HttpRequestException("connexion refusée"));

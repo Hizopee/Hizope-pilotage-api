@@ -43,12 +43,17 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
                 kv => kv.Key,
                 kv =>
                 {
-                    var feeCents = (long)Math.Round(kv.Value.GrossCents * feePercent / 100m, MidpointRounding.AwayFromZero);
+                    // Nos 10% se calculent sur le brut encaissé -- Hizope absorbe les frais Stripe
+                    // sur sa propre marge, ça ne change rien à ce qui revient à Cécilia (décision
+                    // du 14/09 : "Hizope absorbe les frais Stripe").
+                    var serviceFeeCents = (long)Math.Round(kv.Value.GrossCents * feePercent / 100m, MidpointRounding.AwayFromZero);
                     return new StripeCurrencyTotal(
                         ChargesCount: kv.Value.Count,
                         GrossAmount: kv.Value.GrossCents / 100m,
-                        ServiceFeeAmount: feeCents / 100m,
-                        PayoutDue: (kv.Value.GrossCents - feeCents) / 100m);
+                        ServiceFeeAmount: serviceFeeCents / 100m,
+                        StripeFeeAmount: kv.Value.StripeFeeCents / 100m,
+                        NetMargin: (serviceFeeCents - kv.Value.StripeFeeCents) / 100m,
+                        PayoutDue: (kv.Value.GrossCents - serviceFeeCents) / 100m);
                 });
 
             var alerts = new List<StripeAlert>();
@@ -58,6 +63,12 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
                 alerts.Add(new StripeAlert("disputes", "critical", $"{disputedCount} litige(s) (dispute) détecté(s) sur des paiements."));
             if (refundedTotalCents > 0)
                 alerts.Add(new StripeAlert("refunds", "info", $"{refundedTotalCents / 100m:0.00} remboursé au total (cumulatif)."));
+            foreach (var (currency, total) in totalsDto)
+            {
+                if (total.NetMargin < 0)
+                    alerts.Add(new StripeAlert("negative_margin", "warning",
+                        $"Marge nette négative en {currency.ToUpperInvariant()} : les frais Stripe ({total.StripeFeeAmount:0.00}€) dépassent les frais de service retenus ({total.ServiceFeeAmount:0.00}€)."));
+            }
 
             RecordSync(environment, new SyncLogEntry(timestamp, "success", chargesFetched, null));
 
@@ -80,10 +91,10 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
         }
     }
 
-    private async Task<(Dictionary<string, (long GrossCents, int Count)> Totals, int FailedCount, int DisputedCount, long RefundedCents, int ChargesFetched)>
+    private async Task<(Dictionary<string, (long GrossCents, int Count, long StripeFeeCents)> Totals, int FailedCount, int DisputedCount, long RefundedCents, int ChargesFetched)>
         FetchChargesAsync(string apiKey, CancellationToken ct)
     {
-        var totals = new Dictionary<string, (long GrossCents, int Count)>();
+        var totals = new Dictionary<string, (long GrossCents, int Count, long StripeFeeCents)>();
         var failedCount = 0;
         var disputedCount = 0;
         long refundedCents = 0;
@@ -92,7 +103,10 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
 
         for (var page = 0; page < 10; page++)
         {
-            var query = "limit=100" + (startingAfter is null ? "" : $"&starting_after={Uri.EscapeDataString(startingAfter)}");
+            // expand[]=data.balance_transaction : nécessaire pour avoir les vrais frais Stripe
+            // (balance_transaction.fee) sans un appel séparé par charge.
+            var query = "limit=100&expand[]=data.balance_transaction"
+                + (startingAfter is null ? "" : $"&starting_after={Uri.EscapeDataString(startingAfter)}");
             using var request = new HttpRequestMessage(HttpMethod.Get, $"/v1/charges?{query}");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
@@ -114,8 +128,11 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
 
                 if (status == "succeeded")
                 {
-                    var (grossCents, count) = totals.TryGetValue(currency, out var existing) ? existing : (0L, 0);
-                    totals[currency] = (grossCents + amount - amountRefunded, count + 1);
+                    var (grossCents, count, stripeFeeCents) = totals.TryGetValue(currency, out var existing) ? existing : (0L, 0, 0L);
+                    var chargeFeeCents = charge.TryGetProperty("balance_transaction", out var bt) && bt.ValueKind == JsonValueKind.Object
+                        ? bt.GetProperty("fee").GetInt64()
+                        : 0L;
+                    totals[currency] = (grossCents + amount - amountRefunded, count + 1, stripeFeeCents + chargeFeeCents);
                 }
                 else if (status == "failed")
                 {
@@ -153,7 +170,13 @@ public class StripeReconciliationClient(HttpClient httpClient, IConfiguration co
     }
 }
 
-public record StripeCurrencyTotal(int ChargesCount, decimal GrossAmount, decimal ServiceFeeAmount, decimal PayoutDue);
+public record StripeCurrencyTotal(
+    int ChargesCount,
+    decimal GrossAmount,
+    decimal ServiceFeeAmount,
+    decimal StripeFeeAmount,
+    decimal NetMargin,
+    decimal PayoutDue);
 
 public record StripeAlert(string Type, string Severity, string Message);
 
