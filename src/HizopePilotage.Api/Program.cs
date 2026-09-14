@@ -13,6 +13,14 @@ builder.Services.AddHttpClient<CmicrolocksReconciliationClient>(client =>
     client.BaseAddress = new Uri(baseUrl);
 });
 
+// Appel direct à Stripe (clé secrète en config, jamais exposée côté Vue) : voir
+// StripeReconciliationClient pour pourquoi ce n'est pas redondant avec CMicrolocks.
+builder.Services.AddHttpClient<StripeReconciliationClient>(client =>
+{
+    var baseUrl = builder.Configuration["Stripe:BaseUrl"] ?? "https://api.stripe.com";
+    client.BaseAddress = new Uri(baseUrl);
+});
+
 const string WebOrigin = "web";
 builder.Services.AddCors(options =>
 {
@@ -79,6 +87,27 @@ app.MapGet("/api/logs/cmicrolocks", async (
     {
         return Results.Problem(
             title: "CMicrolocks injoignable ou route non configurée",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/stripe/cmicrolocks/summary", async (StripeReconciliationClient client, CancellationToken ct, string environment = "live") =>
+{
+    if (environment is not ("live" or "test"))
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["environment"] = ["Doit être 'live' ou 'test'."],
+        });
+
+    try
+    {
+        return Results.Ok(await client.GetSummaryAsync(environment, ct));
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "Stripe injoignable ou clé invalide",
             detail: ex.Message,
             statusCode: StatusCodes.Status502BadGateway);
     }
