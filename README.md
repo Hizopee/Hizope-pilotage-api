@@ -12,10 +12,21 @@ propres routes `api/platform/*`, protégées par une clé secrète partagée (en
 API se contente d'appeler ces routes avec la bonne clé et de relayer la réponse : aucune
 base de données ici, aucun état, juste un proxy authentifié par produit.
 
-Premier module : **CMicrolocks** — combien Hizope doit reverser au salon sur les acomptes
-encaissés hors Stripe Connect (`GET/POST /api/reconciliation/cmicrolocks`). Les prochains
-produits ajouteront leur propre client (`XxxReconciliationClient`) + leurs propres routes,
-sur le même modèle.
+Modules :
+
+- **CMicrolocks** — combien Hizope doit reverser au salon sur les acomptes
+encaissés hors Stripe Connect (`GET/POST /api/reconciliation/cmicrolocks`), résumé Stripe
+  (`GET /api/stripe/cmicrolocks/summary`, 10 % de frais de service), logs
+  (`GET /api/logs/cmicrolocks`).
+- **LoveList** — produit 100 % Hizope (abonnements Premium) : **aucune commission, rien à
+  reverser**, tout l'encaissé revient à Hizope. Résumé Stripe
+  (`GET /api/stripe/lovelist/summary` : brut, frais Stripe, net), virements Stripe vers le
+  compte bancaire + solde disponible/en attente (`GET /api/stripe/lovelist/payouts`), logs
+  applicatifs (`GET /api/logs/lovelist`, relaie `api/platform/logs` de LoveList-backend).
+
+`/api/stripe/{product}/payouts` marche aussi pour `cmicrolocks`. Les prochains produits
+ajouteront leur propre client (`XxxPlatformClient`) + leurs propres routes, sur le même
+modèle.
 
 ## Sécurité
 
@@ -38,6 +49,10 @@ service tourne déjà sur ce port en local. Variables utiles en dev
 ```
 CMicrolocks__BaseUrl=http://localhost:5081
 CMicrolocks__PlatformKey=une-cle-de-dev
+LoveList__BaseUrl=http://localhost:5082
+LoveList__PlatformKey=une-cle-de-dev
+LoveList__Stripe__SecretKey=rk_live_...
+LoveList__Stripe__TestSecretKey=rk_test_...
 ```
 
 (pointer vers une instance locale de `CMicrolocks-backend` avec `Platform:PilotageKey`
@@ -64,4 +79,18 @@ Actions`) :
 
 Variables d'environnement posées côté VPS (`hizope-scaleway-deploy/shared-vps/.env`,
 jamais commitées) : `CMICROLOCKS_PLATFORM_KEY` (même valeur que
-`Platform__PilotageKey` côté `CMicrolocks-backend` — sinon 401 systématique).
+`Platform__PilotageKey` côté `CMicrolocks-backend` — sinon 401 systématique),
+`HIZOPE_PILOTAGE_STRIPE_SECRET_KEY` / `HIZOPE_PILOTAGE_STRIPE_TEST_SECRET_KEY` (CMicrolocks),
+et pour LoveList :
+
+| Variable VPS | Config API | Valeur |
+|---|---|---|
+| `LOVELIST_PLATFORM_KEY` | `LoveList__PlatformKey` | Même valeur que `Platform__PilotageKey` côté `LoveList-backend` |
+| `HIZOPE_PILOTAGE_LOVELIST_STRIPE_SECRET_KEY` | `LoveList__Stripe__SecretKey` | Clé **restreinte** live du compte Stripe LoveList |
+| `HIZOPE_PILOTAGE_LOVELIST_STRIPE_TEST_SECRET_KEY` | `LoveList__Stripe__TestSecretKey` | Clé restreinte test |
+
+Clés Stripe restreintes (Dashboard Stripe > Développeurs > Clés API > Créer une clé
+restreinte), en **lecture seule** : `Charges`, `Balance`, `Payouts` en *Read*, rien
+d'autre. Ne pas réutiliser `LOVELIST_STRIPE_SECRET_KEY` (clé complète de LoveList-backend,
+qui crée de vrais abonnements). Clé absente → les routes répondent 503 « Clé Stripe non
+configurée », le reste du tableau de bord continue de marcher.
