@@ -1,14 +1,21 @@
 name: Deploy en production
 
-# Se déclenche à chaque push sur main. Le job "test" doit passer avant que
-# "deploy" ne se déclenche — un test qui échoue bloque le déploiement.
+# test -> build (image Docker construite ICI, sur GitHub, puis poussée dans le registre
+# GitHub ghcr.io) -> deploy (le VPS télécharge l'image et redémarre le conteneur).
+# Le VPS ne compile plus rien : les builds .NET saturaient sa mémoire et son disque
+# ("No space left on device") et avaient poussé vers des serveurs de plus en plus chers.
+#
+# Sur une pull request : test + build de l'image (sans la pousser), pour vérifier que
+# l'image se construit avant de merger.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 env:
   DOTNET_VERSION: '10.0.x'
+  IMAGE: ghcr.io/hizopee/hizope-pilotage-api
 
 jobs:
   test:
@@ -31,23 +38,70 @@ jobs:
       - name: Lancer les tests
         run: dotnet test HizopePilotage.slnx --configuration Release --no-build
 
-  deploy:
+  build:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Préparer Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Se connecter au registre GitHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construire (et pousser) l'image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:main
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
     steps:
       - name: Déployer sur shared-vps
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: 62.210.78.72
           username: root
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN
           script: |
             set -e
-            export GIT_SSH_COMMAND='ssh -i ~/.ssh/cmicrolocks_deploy_key -o StrictHostKeyChecking=accept-new'
-            cd ~/Hizope-pilotage-api
-            git fetch origin
-            git checkout -f -B main origin/main
-            git reset --hard origin/main
-            git clean -fd
+
+            # Un seul déploiement à la fois sur le VPS partagé, tous dépôts confondus.
+            exec 9>/var/lock/shared-vps-deploy.lock
+            flock 9
+
+            # Jeton temporaire du job (lecture seule du registre), jamais stocké sur le VPS.
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
             cd ~/hizope-scaleway-deploy/shared-vps
-            docker compose -f docker-compose.prod.yml up -d --build hizope-pilotage-api
+            docker compose -f docker-compose.prod.yml pull hizope-pilotage-api
+            docker compose -f docker-compose.prod.yml up -d --no-build hizope-pilotage-api
+
+            docker logout ghcr.io
+            # Anciennes versions de l'image : seules les images inutilisées sont supprimées.
+            docker image prune -af
+            df -h /
