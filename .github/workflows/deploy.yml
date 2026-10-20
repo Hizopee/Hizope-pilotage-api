@@ -98,6 +98,10 @@ jobs:
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
             cd ~/hizope-scaleway-deploy/shared-vps
+            # Garde-fou : tant que le compose du VPS n'a pas "image: ghcr.io/..." (git pull
+            # oublié dans ~/hizope-scaleway-deploy), "pull" ne ferait rien et l'ancienne
+            # version resterait en ligne sans aucune erreur.
+            docker compose -f docker-compose.prod.yml config --images | grep -qx 'ghcr.io/hizopee/hizope-pilotage-api:main' \n              || { echo "❌ docker-compose.prod.yml du VPS pas à jour : git pull dans ~/hizope-scaleway-deploy"; exit 1; }
             docker compose -f docker-compose.prod.yml pull hizope-pilotage-api
             docker compose -f docker-compose.prod.yml up -d --no-build hizope-pilotage-api
 
