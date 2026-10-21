@@ -21,6 +21,16 @@ builder.Services.AddHttpClient<StripeReconciliationClient>(client =>
     client.BaseAddress = new Uri(baseUrl);
 });
 
+// Modération Gaia (utilisatrices à valider, signalements, messages, vérifications audio/vidéo) :
+// relais vers les routes api/platform/moderation/* de Gaia-backend, avec la clé partagée.
+builder.Services.AddHttpClient<GaiaModerationClient>(client =>
+{
+    var baseUrl = builder.Configuration["Gaia:BaseUrl"] ?? "https://api.gaia-app.fr";
+    client.BaseAddress = new Uri(baseUrl);
+    // Les vidéos de vérification peuvent être lourdes : pas le délai de 100 s par défaut.
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
+
 const string WebOrigin = "web";
 builder.Services.AddCors(options =>
 {
@@ -108,6 +118,53 @@ app.MapGet("/api/stripe/cmicrolocks/summary", async (StripeReconciliationClient 
     {
         return Results.Problem(
             title: "Stripe injoignable ou clé invalide",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+// Relais générique : /api/moderation/gaia/{chemin} -> Gaia /api/platform/moderation/{chemin}
+// (même méthode, même query string, même corps). Convient aux listes JSON comme aux flux
+// audio/vidéo (en-tête Range transmis pour pouvoir avancer dans un fichier).
+app.MapMethods("/api/moderation/gaia/{**path}", ["GET", "POST"], async (
+    string path, HttpContext http, GaiaModerationClient client, CancellationToken ct) =>
+{
+    if (!GaiaModerationClient.IsSafeRelativePath(path))
+        return Results.BadRequest(new { detail = "Chemin invalide." });
+
+    try
+    {
+        var request = http.Request;
+        var upstream = await client.ForwardAsync(
+            new HttpMethod(request.Method), path, request.QueryString.Value ?? "",
+            request.ContentLength > 0 ? request.Body : null, request.ContentType,
+            request.Headers.Range.ToString(), ct);
+
+        return new UpstreamResult(upstream);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "Gaia injoignable ou route non configurée",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/moderation/gaia-photos/{fileName}", async (
+    string fileName, GaiaModerationClient client, CancellationToken ct) =>
+{
+    if (fileName != Path.GetFileName(fileName))
+        return Results.BadRequest(new { detail = "Nom de fichier invalide." });
+
+    try
+    {
+        return new UpstreamResult(await client.GetPhotoAsync(fileName, ct));
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "Gaia injoignable",
             detail: ex.Message,
             statusCode: StatusCodes.Status502BadGateway);
     }
