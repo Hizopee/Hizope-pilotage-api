@@ -13,6 +13,12 @@ builder.Services.AddHttpClient<CmicrolocksReconciliationClient>(client =>
     client.BaseAddress = new Uri(baseUrl);
 });
 
+builder.Services.AddHttpClient<LoveListPlatformClient>(client =>
+{
+    var baseUrl = builder.Configuration["LoveList:BaseUrl"] ?? "https://api.lovelist.shop";
+    client.BaseAddress = new Uri(baseUrl);
+});
+
 // Appel direct à Stripe (clé secrète en config, jamais exposée côté Vue) : voir
 // StripeReconciliationClient pour pourquoi ce n'est pas redondant avec CMicrolocks.
 builder.Services.AddHttpClient<StripeReconciliationClient>(client =>
@@ -92,17 +98,61 @@ app.MapGet("/api/logs/cmicrolocks", async (
     }
 });
 
-app.MapGet("/api/stripe/cmicrolocks/summary", async (StripeReconciliationClient client, CancellationToken ct, string environment = "live") =>
+app.MapGet("/api/logs/lovelist", async (
+    LoveListPlatformClient client, CancellationToken ct, int take = 200, string? level = null) =>
 {
-    if (environment is not ("live" or "test"))
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["environment"] = ["Doit être 'live' ou 'test'."],
-        });
+    try
+    {
+        return Results.Ok(await client.GetLogsAsync(take, level, ct));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(title: "LoveList non configuré", detail: ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "LoveList injoignable ou route non configurée",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+// {product} : cmicrolocks | lovelist (voir StripeReconciliationClient.Products).
+app.MapGet("/api/stripe/{product}/summary", async (
+    string product, StripeReconciliationClient client, CancellationToken ct, string environment = "live") =>
+{
+    if (ValidateStripeQuery(product, environment) is { } invalid) return invalid;
 
     try
     {
-        return Results.Ok(await client.GetSummaryAsync(environment, ct));
+        return Results.Ok(await client.GetSummaryAsync(product, environment, ct));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(title: "Clé Stripe non configurée", detail: ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Problem(
+            title: "Stripe injoignable ou clé invalide",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/stripe/{product}/payouts", async (
+    string product, StripeReconciliationClient client, CancellationToken ct, string environment = "live", int take = 30) =>
+{
+    if (ValidateStripeQuery(product, environment) is { } invalid) return invalid;
+
+    try
+    {
+        return Results.Ok(await client.GetPayoutsAsync(product, environment, take, ct));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(title: "Clé Stripe non configurée", detail: ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
     catch (HttpRequestException ex)
     {
@@ -114,6 +164,18 @@ app.MapGet("/api/stripe/cmicrolocks/summary", async (StripeReconciliationClient 
 });
 
 app.Run();
+
+static IResult? ValidateStripeQuery(string product, string environment)
+{
+    if (!StripeReconciliationClient.Products.Contains(product))
+        return Results.NotFound();
+    if (environment is not ("live" or "test"))
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["environment"] = ["Doit être 'live' ou 'test'."],
+        });
+    return null;
+}
 
 public record RecordReversalRequest(decimal Amount, DateTime ReversedAt, string? Note);
 
