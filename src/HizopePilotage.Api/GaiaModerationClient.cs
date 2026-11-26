@@ -47,9 +47,16 @@ public class GaiaModerationClient(HttpClient httpClient, IConfiguration configur
         return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
     }
 
-    /// <summary>Photos de profil : servies publiquement par Gaia (/photos/{fichier}), relayées ici pour que le navigateur n'ait qu'une seule origine.</summary>
-    public async Task<HttpResponseMessage> GetPhotoAsync(string fileName, CancellationToken ct) =>
-        await httpClient.GetAsync($"/photos/{Uri.EscapeDataString(fileName)}", HttpCompletionOption.ResponseHeadersRead, ct);
+    /// <summary>
+    /// Photos de profil (/photos/{fichier}) : Gaia ne les sert plus qu'à une personne connectée ou à la clé de plateforme.
+    /// Elles sont relayées ici avec X-Platform-Key pour que le navigateur n'ait qu'une seule origine.
+    /// </summary>
+    public async Task<HttpResponseMessage> GetPhotoAsync(string fileName, CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/photos/{Uri.EscapeDataString(fileName)}");
+        request.Headers.Add("X-Platform-Key", PlatformKey);
+        return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+    }
 
     public static IEnumerable<string> ResponseHeadersToForward => ForwardedResponseHeaders;
 }

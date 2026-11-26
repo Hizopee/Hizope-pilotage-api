@@ -121,7 +121,7 @@ public class GaiaModerationEndpointsTests
     }
 
     [Fact]
-    public async Task Photo_IsRelayedFromGaiaPublicRoute()
+    public async Task Photo_IsRelayedFromGaiaWithThePlatformKey()
     {
         var (factory, handler) = CreateFactory(_ =>
         {
@@ -135,7 +135,7 @@ public class GaiaModerationEndpointsTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("/photos/abc.jpg", handler.LastRequest!.RequestUri!.AbsolutePath);
-        Assert.False(handler.LastRequest.Headers.Contains("X-Platform-Key"));
+        Assert.True(handler.LastRequest.Headers.Contains("X-Platform-Key"));
     }
 
     [Fact]
